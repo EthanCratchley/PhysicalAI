@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Third-party MuJoCo Menagerie clone — see README for setup.
+# Only our custom scene file is tracked.
+menagerie/*
+!menagerie/robotstudio_so101/
+menagerie/robotstudio_so101/*
+!menagerie/robotstudio_so101/pick_scene.xml
+
+.DS_Store
