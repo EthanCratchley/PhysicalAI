@@ -43,14 +43,32 @@ def site_frame(model, arm_qpos):
 def solve(model, start_qpos, target_pos, point_down=True):
     """Solve for the arm pose putting gripperframe at target_pos.
 
+    DLS is a local method and a single seed can get stuck in a local minimum
+    at a perfectly reachable target, so a failed solve is retried from a few
+    deterministic random seeds before giving up; the best attempt is returned.
+
     point_down=True also requires the gripper to point straight down (for
     grasping). point_down=False solves position only, letting the gripper
     tilt — the arm is too short to hold a vertical gripper high up, so
     transport/drop waypoints use this mode.
-
-    Purely kinematic: runs on a scratch MjData, never touches the live sim.
-    start_qpos seeds the solve (use the current arm pose so the solution is nearby).
     """
+    best = _solve_once(model, start_qpos, target_pos, point_down)
+    if best.converged:
+        return best
+    lo, hi = model.jnt_range[[model.joint(n).id for n in ARM_JOINTS]].T
+    rng = np.random.default_rng(0)  # fixed seeds: same target, same answer
+    for _ in range(cfg.IK_RESTARTS):
+        res = _solve_once(model, rng.uniform(lo, hi), target_pos, point_down)
+        if res.converged:
+            return res
+        if res.pos_err < best.pos_err:
+            best = res
+    return best
+
+
+def _solve_once(model, start_qpos, target_pos, point_down):
+    """One DLS descent from a single seed. Runs on a scratch MjData,
+    never touches the live sim."""
     site = model.site("gripperframe").id
     adr = [model.joint(n).qposadr[0] for n in ARM_JOINTS]
     dof = [model.joint(n).dofadr[0] for n in ARM_JOINTS]

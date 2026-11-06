@@ -10,10 +10,11 @@ REACH_MIN = 0.12              # targets closer than this are inside the robot's 
 REACH_MAX = 0.30              # targets farther than this are beyond the arm
 
 # --- inverse kinematics (damped least squares) ---
-IK_POS_TOL = 0.005            # accept solution when gripper is within this of target (m)
+IK_POS_TOL = 0.015            # accept solution when gripper is within this of target (m)
 IK_ORI_TOL = 0.08             # and pointing error is below this (rad, ~5 deg)
 IK_DAMPING = 0.1              # lambda: higher = more stable near singularities, slower convergence
 IK_MAX_ITERS = 300
+IK_RESTARTS = 5               # extra random-seed attempts when a solve fails (DLS local minima)
 IK_ORI_WEIGHT = 0.5           # how much pointing-down matters vs position during solving
 
 JOINT_LIMIT_MARGIN = 0.05     # pre-check fails if any IK joint angle is within this of a hard limit (rad)
@@ -21,7 +22,7 @@ JOINT_LIMIT_MARGIN = 0.05     # pre-check fails if any IK joint angle is within 
 # --- grasp geometry ---
 # the arm is short: it can only hold the gripper vertical below ~0.09m height,
 # so the hover is low and the drop waypoint allows a tilted gripper
-HOVER_Z = 0.09                # absolute gripper height when hovering above the block (m)
+HOVER_Z = 0.08                # absolute gripper height when hovering above the block (m)
 GRASP_Z_OFFSET = 0.0          # grasp target height relative to block center (m)
 CARRY_Z = 0.14                # lift to this height (tilt allowed) before swinging to the bin,
                               # so the hanging block clears the bin walls
