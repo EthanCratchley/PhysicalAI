@@ -152,6 +152,12 @@ class Sim:
         """Ground-truth block position — the stand-in for perception."""
         return self.data.qpos[self.block_qpos:self.block_qpos + 3].copy()
 
+    def block_yaw(self):
+        """Ground-truth block yaw — physics can spin it after nudges and
+        whiffs, and the jaws should land square on its faces."""
+        w, x, y, z = self.data.qpos[self.block_qpos + 3:self.block_qpos + 7]
+        return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+
     def nudge_block(self, dist, dir_deg):
         """Teleport the block horizontally — the 'someone moved it' fault."""
         d = np.radians(dir_deg)
@@ -172,18 +178,16 @@ class Sim:
         self.model.geom_priority[self.block_geoms] = 0
 
 
-def attempt(sim, rng):
-    """One full pick-and-place. Returns (success, reason)."""
-    sim.spawn_block(rng)
-    target = sim.block_pos()
-    print(f"  block at ({target[0]:+.3f}, {target[1]:+.3f}), "
-          f"{np.linalg.norm(target[:2]):.3f}m from base")
-
+def plan_pick(sim, target, face_yaw=0.0):
+    """IK for the full pick sequence at a perceived position, plus the
+    pre-check's verdict on it. face_yaw is the block's yaw: grasp and hover
+    wrists are rolled so the jaws land square on the block's faces."""
     # first solve at the block center just to learn the gripper's orientation
     # there, then shift the target along the jaw-separation axis (site z) so
     # the block sits centered in the jaw gap instead of under the fixed jaw
     nominal = ik.solve(sim.model, HOME, target + [0, 0, cfg.GRASP_Z_OFFSET])
-    _, R = ik.site_frame(sim.model, nominal.qpos)
+    aligned = ik.align_wrist(sim.model, nominal.qpos, face_yaw)
+    _, R = ik.site_frame(sim.model, aligned)
     jaw_axis = R[:, 2] * [1, 1, 0]  # horizontal part only
     jaw_axis /= np.linalg.norm(jaw_axis)
     shift = cfg.GRASP_SIDE_OFFSET * jaw_axis
@@ -191,13 +195,26 @@ def attempt(sim, rng):
     grasp_pos = target + [0, 0, cfg.GRASP_Z_OFFSET] - shift
     # seed each solve from the nearby solution we already have — DLS is a local
     # method, and a good starting guess is the difference between converging or not
-    hover = ik.solve(sim.model, nominal.qpos, [grasp_pos[0], grasp_pos[1], cfg.HOVER_Z])
+    hover = ik.solve(sim.model, aligned, [grasp_pos[0], grasp_pos[1], cfg.HOVER_Z])
     grasp = ik.solve(sim.model, hover.qpos, grasp_pos)
+    # the solves can drift the roll again; square the jaws on the final poses
+    hover.qpos = ik.align_wrist(sim.model, hover.qpos, face_yaw)
+    grasp.qpos = ik.align_wrist(sim.model, grasp.qpos, face_yaw)
     bin_pos = sim.model.body("bin").pos
     carry = ik.solve(sim.model, hover.qpos, [grasp_pos[0], grasp_pos[1], cfg.CARRY_Z], point_down=False)
     drop = ik.solve(sim.model, HOME, [bin_pos[0], bin_pos[1], cfg.DROP_Z], point_down=False)
+    ok, verdict = checks.pre_check(sim.model, target, grasp, hover)
+    return hover, grasp, carry, drop, ok, verdict
 
-    ok, reason = checks.pre_check(sim.model, target, grasp, hover)
+
+def attempt(sim, rng):
+    """One full pick-and-place. Returns (success, reason)."""
+    sim.spawn_block(rng)
+    target = sim.block_pos()
+    print(f"  block at ({target[0]:+.3f}, {target[1]:+.3f}), "
+          f"{np.linalg.norm(target[:2]):.3f}m from base")
+
+    hover, grasp, carry, drop, ok, reason = plan_pick(sim, target, sim.block_yaw())
     if not ok:
         return False, f"pre-check: {reason}"
 
