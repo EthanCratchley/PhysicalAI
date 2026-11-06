@@ -4,20 +4,41 @@ These are the two judgment calls of the pipeline: should we even attempt this
 grasp, and did it actually work? Working versions to study and rewrite.
 """
 
+import mujoco
 import numpy as np
 
 import config as cfg
 from ik import ARM_JOINTS
 
 
+def pose_collides(model, arm_qpos):
+    """Does this arm pose intersect the robot itself? IK is collision-blind,
+    so a converged solution can still be physically unoccupiable — executing
+    one jams the gripper against the base. Kinematic check on a scratch MjData;
+    the block is parked far away and floor contacts are ignored."""
+    d = mujoco.MjData(model)
+    d.qpos[[model.joint(n).qposadr[0] for n in ARM_JOINTS]] = arm_qpos
+    blk = model.joint("block_free").qposadr[0]
+    d.qpos[blk:blk + 3] = [1.0, 1.0, 1.0]
+    mujoco.mj_forward(model, d)
+    floor = model.geom("floor").id
+    for c in d.contact[:d.ncon]:
+        if floor in (c.geom1, c.geom2):
+            continue
+        return True
+    return False
+
+
 def pre_check(model, target_pos, grasp_ik, hover_ik):
     """Decide whether the grasp should be attempted. Returns (ok, reason).
 
-    Three ways a target can be bad:
+    Four ways a target can be bad:
     1. Out of reach: too far from (or too close to) the base in the horizontal plane.
     2. No IK solution: the solver couldn't find joint angles for the grasp or
        hover pose. Near-singular or infeasible poses show up here.
-    3. Too close to joint limits: a solution exists, but some joint would sit
+    3. Self-collision: a solution exists on paper but the pose overlaps the
+       robot's own body, so the arm can't actually occupy it.
+    4. Too close to joint limits: a solution exists, but some joint would sit
        within JOINT_LIMIT_MARGIN of its hard stop, leaving no room to correct.
     """
     r = np.linalg.norm(target_pos[:2])
@@ -29,6 +50,8 @@ def pre_check(model, target_pos, grasp_ik, hover_ik):
     for name, res in [("grasp", grasp_ik), ("hover", hover_ik)]:
         if not res.converged:
             return False, f"no IK solution for {name} pose (pos err {res.pos_err:.3f}m)"
+        if pose_collides(model, res.qpos):
+            return False, f"self-collision at {name} pose"
 
     lo, hi = model.jnt_range[[model.joint(n).id for n in ARM_JOINTS]].T
     margin = np.minimum(grasp_ik.qpos - lo, hi - grasp_ik.qpos)
