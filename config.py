@@ -1,8 +1,17 @@
 """All tunable numbers in one place. The code reads these; you edit them."""
 
 # --- spawn region: polar coordinates around the robot base, 0 deg = straight ahead (+x) ---
-SPAWN_R = (0.18, 0.26)        # meters from base
-SPAWN_ANGLE = (-40.0, 60.0)   # degrees
+# Weighted radial bands chosen to probe the robot's limits: well inside min
+# reach, straddling each reach boundary (REACH_MIN/REACH_MAX below), the
+# comfortable middle, and well beyond the arm. (name, weight, r_lo, r_hi).
+SPAWN_BANDS = (
+    ("inner",    1, 0.05, 0.10),
+    ("min_edge", 2, 0.10, 0.14),
+    ("mid",      2, 0.14, 0.28),
+    ("max_edge", 2, 0.28, 0.32),
+    ("outer",    1, 0.32, 0.40),
+)
+SPAWN_ANGLE = (-110.0, 110.0)  # degrees; wide enough to run into pan joint limits
 SPAWN_CLEAR_OF_BIN = 0.11     # resample if the block lands this close to the bin center (m)
 
 # --- pre-check: reach limits ---

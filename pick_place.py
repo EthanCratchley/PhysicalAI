@@ -1,9 +1,9 @@
 """Pick-and-place attempts with the SO-101.
 
-Each attempt: spawn the block at a random reachable spot -> read its position
-(ground truth from the sim, standing in for perception) -> pre-check -> IK for
-the waypoints -> execute hover/descend/grasp/lift/transport/drop -> success
-check -> reset home.
+Each attempt: spawn the block somewhere in a weighted band — from right at the
+base to well beyond the arm's reach -> read its position (ground truth from the
+sim, standing in for perception) -> pre-check -> IK for the waypoints ->
+execute hover/descend/grasp/lift/transport/drop -> success check -> reset home.
 
 Run with the viewer:      .venv/bin/mjpython pick_place.py
 Run headless (fast):      .venv/bin/python pick_place.py --headless
@@ -22,6 +22,14 @@ import checks
 import ik
 
 HOME = np.zeros(5)
+
+
+def sample_spawn(rng):
+    """Pick a spawn band by weight, then a uniform (r, angle) inside it.
+    Returns (band name, radius in m, angle in deg)."""
+    weights = np.array([b[1] for b in cfg.SPAWN_BANDS], dtype=float)
+    name, _, lo, hi = cfg.SPAWN_BANDS[rng.choice(len(cfg.SPAWN_BANDS), p=weights / weights.sum())]
+    return name, rng.uniform(lo, hi), rng.uniform(*cfg.SPAWN_ANGLE)
 
 
 class Sim:
@@ -67,18 +75,33 @@ class Sim:
             self.step()
 
     def spawn_block(self, rng):
-        """Drop the block at a random reachable spot, clear of the bin."""
+        """Drop the block at a random banded spot, clear of the bin and not
+        intersecting the robot. Returns the band name it spawned in."""
         bin_xy = self.model.body("bin").pos[:2]
         while True:
-            r = rng.uniform(*cfg.SPAWN_R)
-            a = np.radians(rng.uniform(*cfg.SPAWN_ANGLE))
-            xy = r * np.array([np.cos(a), np.sin(a)])
-            if np.linalg.norm(xy - bin_xy) > cfg.SPAWN_CLEAR_OF_BIN:
-                break
-        i = self.block_qpos
-        self.data.qpos[i:i + 7] = [xy[0], xy[1], 0.031, 1, 0, 0, 0]
-        self.data.qvel[self.model.joint("block_free").dofadr[0]:][:6] = 0
-        mujoco.mj_forward(self.model, self.data)
+            band, r, a = sample_spawn(rng)
+            xy = r * np.array([np.cos(np.radians(a)), np.sin(np.radians(a))])
+            if np.linalg.norm(xy - bin_xy) <= cfg.SPAWN_CLEAR_OF_BIN:
+                continue
+            i = self.block_qpos
+            self.data.qpos[i:i + 7] = [xy[0], xy[1], 0.031, 1, 0, 0, 0]
+            self.data.qvel[self.model.joint("block_free").dofadr[0]:][:6] = 0
+            mujoco.mj_forward(self.model, self.data)
+            if not self.block_touches_robot():
+                return band
+
+    def block_touches_robot(self):
+        """Is the just-placed block in contact with anything besides the floor?
+        Inner spawn bands reach the robot's own footprint, so a draw can land
+        inside the base; those spots get resampled."""
+        block = self.model.jnt_bodyid[self.model.joint("block_free").id]
+        floor = self.model.geom("floor").id
+        for c in self.data.contact[:self.data.ncon]:
+            if floor in (c.geom1, c.geom2):
+                continue
+            if block in (self.model.geom_bodyid[c.geom1], self.model.geom_bodyid[c.geom2]):
+                return True
+        return False
 
     def block_pos(self):
         """Ground-truth block position — the stand-in for perception."""
