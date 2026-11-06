@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
+logs/
 
 # Third-party MuJoCo Menagerie clone — see README for setup.
 # Only our custom scene file is tracked.

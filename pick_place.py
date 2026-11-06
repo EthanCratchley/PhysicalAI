@@ -18,6 +18,9 @@ More attempts:            add e.g. --attempts 10
 """
 
 import argparse
+import datetime
+import json
+import os
 import time
 
 import mujoco
@@ -407,13 +410,32 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--attempts", type=int, default=3)
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=None,
+                        help="omit for a random seed; it's printed and logged so any run can be replayed")
+    parser.add_argument("--replay", type=str, default=None,
+                        help="comma-separated attempt numbers from a previous run with this seed, "
+                             "e.g. --replay 11,14,32; other attempts are skipped")
     args = parser.parse_args()
+
+    replay = None
+    if args.replay:
+        replay = {int(n) for n in args.replay.split(",")}
+        args.attempts = max(replay)
+
+    if args.seed is None:
+        args.seed = int(np.random.SeedSequence().entropy % 2**31)
+    print(f"seed {args.seed}")
 
     sim = Sim(args.headless)
     rng = np.random.default_rng(args.seed)
     entries = []
     for i in range(args.attempts):
+        if replay and i + 1 not in replay:
+            # burn this episode's main-stream draws (spawn + child rng seed) so
+            # the replayed ones come out exactly as they did in the original run
+            sim.spawn_block(rng)
+            rng.integers(2**32)
+            continue
         print(f"episode {i + 1}/{args.attempts}")
         entry = episode(sim, rng)
         entries.append({"episode": i + 1, **entry})
@@ -427,6 +449,28 @@ def main():
         counts[e["outcome"]] = counts.get(e["outcome"], 0) + 1
     print(f"\n{wins}/{len(entries)} succeeded  "
           + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+
+    # one log file per run: every attempt with its spawn band, the pre-check's
+    # verdict, the physical result, and the exact config used — so runs stay
+    # comparable while config values are being tuned
+    os.makedirs("logs", exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = f"logs/run_{stamp}.json"
+    with open(path, "w") as f:
+        json.dump({
+            "time": stamp,
+            "seed": args.seed,
+            "replay": sorted(replay) if replay else None,
+            "episodes_run": len(entries),
+            "successes": wins,
+            "outcomes": counts,
+            "note": "per block the robot picks when the pre-check passes, nudges the block "
+                    "toward the workspace when it can at least touch it, and stops otherwise; "
+                    "declines are trusted, not verified — audit them against the spawn band",
+            "episodes": entries,
+            "config": {k: getattr(cfg, k) for k in dir(cfg) if k.isupper()},
+        }, f, indent=2)
+    print(f"log written to {path}")
     if sim.viewer:
         sim.viewer.close()
 
