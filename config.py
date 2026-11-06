@@ -14,6 +14,21 @@ SPAWN_BANDS = (
 SPAWN_ANGLE = (-110.0, 110.0)  # degrees; wide enough to run into pan joint limits
 SPAWN_CLEAR_OF_BIN = 0.11     # resample if the block lands this close to the bin center (m)
 
+# --- fault injection ---
+# Each attempt rolls every injection independently with probability p, so most
+# attempts are clean controls or single faults, with an occasional combination.
+# camera: perceived block position rotated about the base and shifted (stale
+#   extrinsics after a bump) — physics keeps the true position.
+# block_move: the real block teleports after planning, before the grasp.
+# noise: per-axis error on the perceived position.
+# friction: block contact friction scaled down for the attempt.
+INJECTIONS = {
+    "camera":     {"p": 0.15, "shift": (0.01, 0.03), "tilt_deg": (1.0, 3.0)},
+    "block_move": {"p": 0.15, "dist": (0.02, 0.05)},
+    "noise":      {"p": 0.15, "per_axis": 0.005},
+    "friction":   {"p": 0.15, "scale": (0.3, 0.5)},
+}
+
 # --- pre-check: reach limits ---
 REACH_MIN = 0.12              # targets closer than this are inside the robot's own footprint
 REACH_MAX = 0.30              # targets farther than this are beyond the arm

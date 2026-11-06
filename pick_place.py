@@ -32,6 +32,46 @@ def sample_spawn(rng):
     return name, rng.uniform(lo, hi), rng.uniform(*cfg.SPAWN_ANGLE)
 
 
+def draw_injections(rng):
+    """Roll each fault independently per cfg.INJECTIONS; returns the drawn
+    faults with their magnitudes. Most draws come back empty or single."""
+    out = []
+    for kind, spec in cfg.INJECTIONS.items():
+        if rng.random() >= spec["p"]:
+            continue
+        inj = {"type": kind}
+        if kind == "camera":
+            inj["shift"] = round(float(rng.uniform(*spec["shift"])), 4)
+            inj["tilt_deg"] = round(float(rng.uniform(*spec["tilt_deg"]) * rng.choice([-1, 1])), 2)
+            inj["dir_deg"] = round(float(rng.uniform(0, 360)), 1)
+        if kind == "block_move":
+            inj["dist"] = round(float(rng.uniform(*spec["dist"])), 4)
+            inj["dir_deg"] = round(float(rng.uniform(0, 360)), 1)
+        if kind == "noise":
+            inj["offset"] = [round(float(v), 4) for v in rng.uniform(-spec["per_axis"], spec["per_axis"], 3)]
+        if kind == "friction":
+            inj["scale"] = round(float(rng.uniform(*spec["scale"])), 3)
+        out.append(inj)
+    return out
+
+
+def perceive(truth, injections):
+    """What the robot believes the block position is: ground truth corrupted by
+    the perception-side faults. Physics-side faults (block_move, friction)
+    leave perception alone."""
+    p = truth.copy().astype(float)
+    for inj in injections:
+        if inj["type"] == "camera":
+            a = np.radians(inj["tilt_deg"])
+            p[:2] = [np.cos(a) * p[0] - np.sin(a) * p[1],
+                     np.sin(a) * p[0] + np.cos(a) * p[1]]
+            d = np.radians(inj["dir_deg"])
+            p[:2] += inj["shift"] * np.array([np.cos(d), np.sin(d)])
+        if inj["type"] == "noise":
+            p += inj["offset"]
+    return p
+
+
 class Sim:
     """Owns the model, data and viewer, and the primitive motions."""
 
@@ -44,6 +84,11 @@ class Sim:
         self.arm = [self.model.actuator(n).id for n in ik.ARM_JOINTS]
         self.grip = self.model.actuator("gripper").id
         self.block_qpos = self.model.joint("block_free").qposadr[0]
+        bid = self.model.jnt_bodyid[self.model.joint("block_free").id]
+        adr = self.model.body_geomadr[bid]
+        self.block_geoms = slice(adr, adr + self.model.body_geomnum[bid])
+        self.block_friction = self.model.geom_friction[self.block_geoms].copy()
+
 
     def step(self):
         start = time.time()
@@ -106,6 +151,25 @@ class Sim:
     def block_pos(self):
         """Ground-truth block position — the stand-in for perception."""
         return self.data.qpos[self.block_qpos:self.block_qpos + 3].copy()
+
+    def nudge_block(self, dist, dir_deg):
+        """Teleport the block horizontally — the 'someone moved it' fault."""
+        d = np.radians(dir_deg)
+        self.data.qpos[self.block_qpos] += dist * np.cos(d)
+        self.data.qpos[self.block_qpos + 1] += dist * np.sin(d)
+        mujoco.mj_forward(self.model, self.data)
+
+    def scale_block_friction(self, scale):
+        """Scale the block's contact friction for this attempt. MuJoCo combines
+        contact friction as the max of the two geoms (at equal priority), which
+        would swallow a reduction — raising the block's priority makes its
+        scaled values win instead."""
+        self.model.geom_friction[self.block_geoms] = self.block_friction * scale
+        self.model.geom_priority[self.block_geoms] = 1
+
+    def restore_block_friction(self):
+        self.model.geom_friction[self.block_geoms] = self.block_friction
+        self.model.geom_priority[self.block_geoms] = 0
 
 
 def attempt(sim, rng):
