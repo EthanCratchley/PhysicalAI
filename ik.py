@@ -40,6 +40,30 @@ def site_frame(model, arm_qpos):
     return d.site_xpos[site].copy(), d.site_xmat[site].reshape(3, 3).copy()
 
 
+def align_wrist(model, qpos, face_yaw=0.0):
+    """Rotate wrist_roll so the jaw axis lies square to a block face (faces
+    repeat every 90 deg). The solver only constrains where the gripper points;
+    roll is a free by-product, so without this the jaws land corner-on at wide
+    angles. Rolling about the (vertical) pointing axis leaves position alone."""
+    def jaw_yaw(q):
+        _, R = site_frame(model, q)
+        return np.arctan2(R[1, 2], R[0, 2])
+
+    q = qpos.copy()
+    lo, hi = model.jnt_range[model.joint("wrist_roll").id]
+    for _ in range(3):
+        off = (jaw_yaw(q) - face_yaw + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        if abs(off) < 0.01:
+            break
+        probe = q.copy()
+        probe[4] = np.clip(q[4] + 0.05, lo, hi)
+        dyaw = (jaw_yaw(probe) - jaw_yaw(q) + np.pi) % (2 * np.pi) - np.pi
+        if abs(dyaw) < 1e-6:
+            break
+        q[4] = np.clip(q[4] - off * (probe[4] - q[4]) / dyaw, lo, hi)
+    return q
+
+
 def solve(model, start_qpos, target_pos, point_down=True):
     """Solve for the arm pose putting gripperframe at target_pos.
 
