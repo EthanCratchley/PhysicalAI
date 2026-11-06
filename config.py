@@ -29,6 +29,17 @@ INJECTIONS = {
     "friction":   {"p": 0.15, "scale": (0.3, 0.5)},
 }
 
+# --- multi-try strategy ---
+MAX_TRIES = 4                 # hard cap on actions (picks + nudges) per block
+TOUCH_TOL = 0.04              # block counts as touchable if best-effort IK gets within this (m)
+NUDGE_MIN_PROGRESS = 0.005    # a nudge must shrink the gap to graspable by this much to earn another (m)
+NUDGE_TARGET_R = 0.21         # drag blocks toward this radius: middle of the comfortable workspace (m)
+NUDGE_ANGLE_CLAMP = (-35.0, 45.0)  # and into this angular sector (deg); narrower than the spawn
+                                   # sector so nudge targets stay clear of the shoulder_pan limit
+PICK_MIN_MOVE = 0.005         # a failed pick earns a retry only if it moved the block this much (m)
+NUDGE_DRAG_MAX = 0.10         # longest drag per nudge (m)
+NUDGE_Z = 0.02                # gripper height while touching/dragging (m)
+
 # --- pre-check: reach limits ---
 REACH_MIN = 0.12              # targets closer than this are inside the robot's own footprint
 REACH_MAX = 0.30              # targets farther than this are beyond the arm

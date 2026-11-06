@@ -5,6 +5,13 @@ base to well beyond the arm's reach -> read its position (ground truth from the
 sim, standing in for perception) -> pre-check -> IK for the waypoints ->
 execute hover/descend/grasp/lift/transport/drop -> success check -> reset home.
 
+Each block is an episode of up to MAX_TRIES actions. Per try the robot
+re-perceives and decides: pick if the pre-check passes; otherwise, if it can at
+least touch the block, nudge it toward the comfortable workspace and try again
+(earning further nudges only while they make progress); otherwise decline.
+Outcomes: picked / recovered (picked after nudging) / missed / gave_up /
+declined.
+
 Run with the viewer:      .venv/bin/mjpython pick_place.py
 Run headless (fast):      .venv/bin/python pick_place.py --headless
 More attempts:            add e.g. --attempts 10
@@ -72,6 +79,60 @@ def perceive(truth, injections):
     return p
 
 
+def dist_to_graspable(p):
+    """How far a position is from the comfortable grasp region — the reach
+    annulus intersected with the angular sector (0 if inside). The robot's
+    progress metric: nudges must shrink this. Angle matters because hover IK
+    fails at extreme angles even at a comfortable radius."""
+    r = np.linalg.norm(p[:2])
+    deg = np.degrees(np.arctan2(p[1], p[0]))
+    if cfg.REACH_MIN <= r <= cfg.REACH_MAX and cfg.NUDGE_ANGLE_CLAMP[0] <= deg <= cfg.NUDGE_ANGLE_CLAMP[1]:
+        return 0.0
+    a = np.radians(np.clip(deg, *cfg.NUDGE_ANGLE_CLAMP))
+    nearest = np.clip(r, cfg.REACH_MIN, cfg.REACH_MAX) * np.array([np.cos(a), np.sin(a)])
+    return float(np.linalg.norm(p[:2] - nearest))
+
+
+def nudge_target(p):
+    """Where a nudge should drag the block: toward the middle of the
+    comfortable workspace (radius and angle clamped), at most NUDGE_DRAG_MAX
+    per nudge. Returns the drag endpoint for the gripper."""
+    a = np.radians(np.clip(np.degrees(np.arctan2(p[1], p[0])), *cfg.NUDGE_ANGLE_CLAMP))
+    v = cfg.NUDGE_TARGET_R * np.array([np.cos(a), np.sin(a)]) - p[:2]
+    d = np.linalg.norm(v)
+    if d > cfg.NUDGE_DRAG_MAX:
+        v *= cfg.NUDGE_DRAG_MAX / d
+    return np.array([p[0] + v[0], p[1] + v[1], cfg.NUDGE_Z])
+
+
+def pick_is_futile(truth, last_pick_truth):
+    """A failed pick earns a retry only if the world changed: the sim is
+    deterministic, so re-running a pick against a block that hasn't moved
+    reproduces the same whiff."""
+    if last_pick_truth is None:
+        return False
+    return bool(np.linalg.norm(truth - last_pick_truth) < cfg.PICK_MIN_MOVE)
+
+
+def classify(actions, in_bin):
+    """Score an episode from the actions taken ("pick"/"nudge"/"none") and
+    whether the block ended in the bin. Returns (outcome, counts as success).
+
+    picked/recovered: in the bin, without/with nudging on the way.
+    missed: a pick was approved at some point but never landed.
+    gave_up: nudged but never got the block into grasp range.
+    declined: never acted — couldn't even touch it, and said so (trusted,
+    not verified; the spawn band in the log is the audit trail).
+    """
+    if in_bin:
+        return ("recovered", True) if "nudge" in actions else ("picked", True)
+    if "pick" in actions:
+        return "missed", False
+    if "nudge" in actions:
+        return "gave_up", False
+    return "declined", True
+
+
 class Sim:
     """Owns the model, data and viewer, and the primitive motions."""
 
@@ -88,7 +149,6 @@ class Sim:
         adr = self.model.body_geomadr[bid]
         self.block_geoms = slice(adr, adr + self.model.body_geomnum[bid])
         self.block_friction = self.model.geom_friction[self.block_geoms].copy()
-
 
     def step(self):
         start = time.time()
@@ -207,29 +267,140 @@ def plan_pick(sim, target, face_yaw=0.0):
     return hover, grasp, carry, drop, ok, verdict
 
 
-def attempt(sim, rng):
-    """One full pick-and-place. Returns (success, reason)."""
-    sim.spawn_block(rng)
-    target = sim.block_pos()
-    print(f"  block at ({target[0]:+.3f}, {target[1]:+.3f}), "
-          f"{np.linalg.norm(target[:2]):.3f}m from base")
+def episode(sim, rng):
+    """One block, up to cfg.MAX_TRIES actions. Each try the robot re-perceives
+    and decides: pick if the pre-check passes; otherwise nudge the block toward
+    the workspace if it can at least touch it; otherwise stop. A second nudge
+    is only earned if the previous one made progress. Returns a log entry dict."""
+    band = sim.spawn_block(rng)
+    # episode-internal randomness (injections, per-try noise redraws) comes from
+    # a child rng so --replay can burn skipped episodes at fixed cost
+    erng = np.random.default_rng(rng.integers(2**32))
+    injections = draw_injections(erng)
+    spawn = sim.block_pos()
+    print(f"  block at ({spawn[0]:+.3f}, {spawn[1]:+.3f}), "
+          f"{np.linalg.norm(spawn[:2]):.3f}m from base [{band}]")
+    if injections:
+        print(f"  injections: {injections}")
+    for inj in injections:
+        if inj["type"] == "friction":
+            sim.scale_block_friction(inj["scale"])
 
-    hover, grasp, carry, drop, ok, reason = plan_pick(sim, target, sim.block_yaw())
-    if not ok:
-        return False, f"pre-check: {reason}"
+    tries, actions = [], []
+    stop = "out of tries"
+    in_bin = False
+    nudge_gap = None   # gap at the moment of the last nudge, for the progress rule
+    last_pick = None   # block truth at the moment of the last pick, same idea
+    for t in range(1, cfg.MAX_TRIES + 1):
+        for inj in injections:
+            # the camera bias is systematic, but sensor noise is a fresh error
+            # on every reading
+            if inj["type"] == "noise" and t > 1:
+                per = cfg.INJECTIONS["noise"]["per_axis"]
+                inj["offset"] = [round(float(v), 4) for v in erng.uniform(-per, per, 3)]
+        truth = sim.block_pos()
+        perceived = perceive(truth, injections)
+        gap = dist_to_graspable(perceived)
+        rec = {"try": t,
+               "truth": [round(float(v), 4) for v in truth],
+               "perceived": [round(float(v), 4) for v in perceived],
+               "gap": round(float(gap), 4)}
 
-    sim.set_gripper(cfg.GRIPPER_OPEN)
-    sim.move_arm(hover.qpos)          # above the block
-    sim.move_arm(grasp.qpos)          # straight down onto it
-    sim.set_gripper(cfg.GRIPPER_CLOSED)
-    sim.move_arm(hover.qpos)          # lift
-    sim.move_arm(carry.qpos)          # higher still, so the block clears the bin walls
-    sim.move_arm(drop.qpos)           # swing to above the bin
-    sim.set_gripper(cfg.GRIPPER_OPEN)  # release
-    sim.settle(1.0)                   # let the block land and stop bouncing
-    sim.move_arm(HOME)
+        hover, grasp, carry, drop, ok, verdict = plan_pick(sim, perceived, sim.block_yaw())
+        rec["precheck"] = {"ok": ok, "reason": verdict}
 
-    return checks.success_check(sim.model, sim.data)
+        if t == 1:
+            # the plan is now fixed: a block_move fault strikes after the first
+            # plan, before the first action
+            for inj in injections:
+                if inj["type"] == "block_move":
+                    sim.nudge_block(inj["dist"], inj["dir_deg"])
+
+        if ok:
+            if pick_is_futile(truth, last_pick):
+                rec["action"] = "none"
+                actions.append("none")
+                tries.append(rec)
+                stop = "no progress"
+                print(f"  try {t}: block hasn't moved since the last whiffed pick — stopping")
+                break
+            rec["action"] = "pick"
+            actions.append("pick")
+            last_pick = truth
+            print(f"  try {t}: pick")
+            sim.set_gripper(cfg.GRIPPER_OPEN)
+            sim.move_arm(hover.qpos)          # above the block
+            sim.move_arm(grasp.qpos)          # straight down onto it
+            sim.set_gripper(cfg.GRIPPER_CLOSED)
+            sim.move_arm(hover.qpos)          # lift
+            sim.move_arm(carry.qpos)          # higher still, so the block clears the bin walls
+            sim.move_arm(drop.qpos)           # swing to above the bin
+            sim.set_gripper(cfg.GRIPPER_OPEN)  # release
+            sim.settle(1.0)                   # let the block land and stop bouncing
+            sim.move_arm(HOME)
+            in_bin, result = checks.success_check(sim.model, sim.data)
+            rec["result"] = {"in_bin": in_bin, "reason": result}
+            tries.append(rec)
+            print(f"    {'in bin' if in_bin else result}")
+            if in_bin:
+                stop = None
+                break
+            continue
+
+        print(f"  try {t}: pre-check declines ({verdict})")
+        touch = ik.solve(sim.model, HOME, [perceived[0], perceived[1], cfg.NUDGE_Z],
+                         point_down=False)
+        if touch.pos_err > cfg.TOUCH_TOL or checks.pose_collides(sim.model, touch.qpos):
+            rec["action"] = "none"
+            actions.append("none")
+            tries.append(rec)
+            stop = "untouchable"
+            why = ("the touch pose self-collides" if touch.pos_err <= cfg.TOUCH_TOL
+                   else f"best effort {touch.pos_err:.3f}m off")
+            print(f"    can't even touch it ({why}) — stopping")
+            break
+        if nudge_gap is not None and nudge_gap - gap < cfg.NUDGE_MIN_PROGRESS:
+            rec["action"] = "none"
+            actions.append("none")
+            tries.append(rec)
+            stop = "no progress"
+            print(f"    last nudge didn't help (gap {nudge_gap:.3f}m -> {gap:.3f}m) — stopping")
+            break
+
+        drag = nudge_target(perceived)
+        # descend from above the block, drag, then lift before going home —
+        # otherwise the glides sweep through the block area and knock it in
+        # uncontrolled directions
+        above = ik.solve(sim.model, touch.qpos, [perceived[0], perceived[1], cfg.HOVER_Z],
+                         point_down=False)
+        end = ik.solve(sim.model, touch.qpos, drag, point_down=False)
+        lift = ik.solve(sim.model, end.qpos, [drag[0], drag[1], cfg.CARRY_Z], point_down=False)
+        rec["action"] = "nudge"
+        rec["drag_to"] = [round(float(v), 4) for v in drag]
+        actions.append("nudge")
+        tries.append(rec)
+        nudge_gap = gap
+        print(f"    nudging toward ({drag[0]:+.3f}, {drag[1]:+.3f})")
+        sim.set_gripper(cfg.GRIPPER_CLOSED)  # closed jaws make a solid paddle
+        sim.move_arm(above.qpos)
+        sim.move_arm(touch.qpos)
+        sim.move_arm(end.qpos)
+        sim.move_arm(lift.qpos)
+        sim.move_arm(HOME)
+        sim.settle(0.5)
+
+    sim.restore_block_friction()
+    outcome, success = classify(actions, in_bin)
+    return {
+        "band": band,
+        "spawn": [round(float(v), 4) for v in spawn],
+        "r": round(float(np.linalg.norm(spawn[:2])), 4),
+        "injections": injections,
+        "tries": tries,
+        "outcome": outcome,
+        "success": success,
+        "stop": stop,
+    }
 
 
 def main():
@@ -241,13 +412,21 @@ def main():
 
     sim = Sim(args.headless)
     rng = np.random.default_rng(args.seed)
-    wins = 0
+    entries = []
     for i in range(args.attempts):
-        print(f"attempt {i + 1}/{args.attempts}")
-        success, reason = attempt(sim, rng)
-        wins += success
-        print(f"  {'SUCCESS' if success else 'FAIL'}: {reason}")
-    print(f"\n{wins}/{args.attempts} succeeded")
+        print(f"episode {i + 1}/{args.attempts}")
+        entry = episode(sim, rng)
+        entries.append({"episode": i + 1, **entry})
+        tag = "SUCCESS" if entry["success"] else "FAIL"
+        print(f"  {tag} ({entry['outcome']}, {len(entry['tries'])} tries"
+              + (f", stop: {entry['stop']}" if entry["stop"] else "") + ")")
+
+    wins = sum(e["success"] for e in entries)
+    counts = {}
+    for e in entries:
+        counts[e["outcome"]] = counts.get(e["outcome"], 0) + 1
+    print(f"\n{wins}/{len(entries)} succeeded  "
+          + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     if sim.viewer:
         sim.viewer.close()
 
