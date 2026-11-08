@@ -367,7 +367,9 @@ def episode(sim, rng):
             last_pick = truth
             print(f"  try {t}: pick")
             sim.set_gripper(cfg.GRIPPER_OPEN)
-            sim.move_arm(hover.qpos)          # above the block
+            sim.move_arm(carry.qpos)          # travel high: joint-space glides sweep
+                                              # low arcs that knock the block around
+            sim.move_arm(hover.qpos)          # then descend above the block
             sim.move_arm(grasp.qpos)          # straight down onto it
             sim.set_gripper(cfg.GRIPPER_CLOSED)
             sim.move_arm(hover.qpos)          # lift
@@ -408,6 +410,8 @@ def episode(sim, rng):
         # descend from above the block, drag, then lift before going home —
         # otherwise the glides sweep through the block area and knock it in
         # uncontrolled directions
+        high = ik.solve(sim.model, touch.qpos, [perceived[0], perceived[1], cfg.CARRY_Z],
+                        point_down=False)
         above = ik.solve(sim.model, touch.qpos, [perceived[0], perceived[1], cfg.HOVER_Z],
                          point_down=False)
         end = ik.solve(sim.model, touch.qpos, drag, point_down=False)
@@ -419,6 +423,7 @@ def episode(sim, rng):
         nudge_gap = gap
         print(f"    nudging toward ({drag[0]:+.3f}, {drag[1]:+.3f})")
         sim.set_gripper(cfg.GRIPPER_CLOSED)  # closed jaws make a solid paddle
+        sim.move_arm(high.qpos)   # travel high first, same reason as the pick
         sim.move_arm(above.qpos)
         sim.move_arm(touch.qpos)
         sim.move_arm(end.qpos)
