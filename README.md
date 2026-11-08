@@ -41,6 +41,9 @@ Run from the project root. The viewer needs `mjpython` (macOS); headless runs us
 # different random spawns
 .venv/bin/python pick_place.py --headless --attempts 100 --seed 2
 
+# only feasible spawns (no at/beyond-reach stress tests)
+.venv/bin/python pick_place.py --headless --attempts 100 --feasible
+
 # replay every failure from the newest run log, in the viewer
 .venv/bin/mjpython pick_place.py --replay-failures
 

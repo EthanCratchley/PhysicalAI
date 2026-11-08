@@ -454,11 +454,20 @@ def main():
     parser.add_argument("--replay", type=str, default=None,
                         help="comma-separated episode numbers from a previous run with this seed, "
                              "e.g. --replay 11,14,32; other episodes are skipped")
+    parser.add_argument("--feasible", action="store_true",
+                        help="spawn only in the comfortable workspace (no at/beyond-reach "
+                             "stress spawns); pass it again when replaying a feasible run")
     parser.add_argument("--replay-failures", nargs="?", const="latest", default=None,
                         metavar="LOG",
                         help="replay every failed episode from a run log "
                              "(a logs/run_*.json path; defaults to the newest log)")
     args = parser.parse_args()
+
+    if args.feasible:
+        # sample_spawn reads these at call time, and the log's config snapshot
+        # records the swapped values, so feasible runs stay self-describing
+        cfg.SPAWN_BANDS = cfg.SPAWN_BANDS_FEASIBLE
+        cfg.SPAWN_ANGLE = cfg.SPAWN_ANGLE_FEASIBLE
 
     replay = None
     if args.replay_failures:

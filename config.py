@@ -12,6 +12,11 @@ SPAWN_BANDS = (
     ("outer",    1, 0.32, 0.40),
 )
 SPAWN_ANGLE = (-110.0, 110.0)  # degrees; wide enough to run into pan joint limits
+
+# --feasible swaps these in: every block lands where a clean pick is
+# kinematically on the table, no at/beyond-reach stress spawns
+SPAWN_BANDS_FEASIBLE = (("mid", 1, 0.15, 0.27),)
+SPAWN_ANGLE_FEASIBLE = (-80.0, 80.0)
 SPAWN_CLEAR_OF_BIN = 0.11     # resample if the block lands this close to the bin center (m)
 
 # --- fault injection ---
