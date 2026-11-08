@@ -120,6 +120,20 @@ def plan_touch(model, p):
     return None
 
 
+def grasp_yaw(quat, half):
+    """The jaw-axis yaw that grips a (possibly tipped) block across its
+    narrowest horizontal dimension. A tipped block presents its 6cm length
+    horizontally; jaws closing across that barely span it, while the 4cm
+    width grips deep — so find the block's horizontal axes and aim across
+    the smallest."""
+    R = np.zeros(9)
+    mujoco.mju_quat2Mat(R, np.asarray(quat, dtype=float))
+    R = R.reshape(3, 3)
+    up = int(np.argmax(np.abs(R[2])))  # body axis most aligned with world z
+    narrow = min((i for i in range(3) if i != up), key=lambda i: half[i])
+    return float(np.arctan2(R[1, narrow], R[0, narrow]))
+
+
 def pick_is_futile(truth, last_pick_truth):
     """A failed pick earns a retry only if the world changed: the sim is
     deterministic, so re-running a pick against a block that hasn't moved
@@ -227,11 +241,11 @@ class Sim:
         """Ground-truth block position — the stand-in for perception."""
         return self.data.qpos[self.block_qpos:self.block_qpos + 3].copy()
 
-    def block_yaw(self):
-        """Ground-truth block yaw — physics can spin it after nudges and
-        whiffs, and the jaws should land square on its faces."""
-        w, x, y, z = self.data.qpos[self.block_qpos + 3:self.block_qpos + 7]
-        return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+    def block_grasp_yaw(self):
+        """Ground-truth best jaw-axis yaw for the block as it currently lies —
+        physics can spin or tip it after nudges and whiffs."""
+        quat = self.data.qpos[self.block_qpos + 3:self.block_qpos + 7]
+        return grasp_yaw(quat, self.model.geom_size[self.block_geoms.start])
 
     def nudge_block(self, dist, dir_deg):
         """Teleport the block horizontally — the 'someone moved it' fault."""
@@ -255,8 +269,9 @@ class Sim:
 
 def plan_pick(sim, target, face_yaw=0.0):
     """IK for the full pick sequence at a perceived position, plus the
-    pre-check's verdict on it. face_yaw is the block's yaw: grasp and hover
-    wrists are rolled so the jaws land square on the block's faces."""
+    pre-check's verdict on it. face_yaw is the desired jaw-axis yaw (from
+    grasp_yaw): grasp and hover wrists are rolled so the jaws close across
+    the block's narrowest horizontal dimension."""
     # first solve at the block center just to learn the gripper's orientation
     # there, then shift the target along the jaw-separation axis (site z) so
     # the block sits centered in the jaw gap instead of under the fixed jaw
@@ -321,7 +336,7 @@ def episode(sim, rng):
                "perceived": [round(float(v), 4) for v in perceived],
                "gap": round(float(gap), 4)}
 
-        hover, grasp, carry, drop, ok, verdict = plan_pick(sim, perceived, sim.block_yaw())
+        hover, grasp, carry, drop, ok, verdict = plan_pick(sim, perceived, sim.block_grasp_yaw())
         rec["precheck"] = {"ok": ok, "reason": verdict}
 
         if t == 1:

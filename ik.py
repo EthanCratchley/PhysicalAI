@@ -41,10 +41,11 @@ def site_frame(model, arm_qpos):
 
 
 def align_wrist(model, qpos, face_yaw=0.0):
-    """Rotate wrist_roll so the jaw axis lies square to a block face (faces
-    repeat every 90 deg). The solver only constrains where the gripper points;
-    roll is a free by-product, so without this the jaws land corner-on at wide
-    angles. Rolling about the (vertical) pointing axis leaves position alone."""
+    """Rotate wrist_roll so the jaw axis lies along the requested yaw
+    (mod 180 deg — a jaw axis has no sign). The solver only constrains where
+    the gripper points; roll is a free by-product, so without this the jaws
+    land corner-on, or across a tipped block's long side. Rolling about the
+    (vertical) pointing axis leaves position alone."""
     def jaw_yaw(q):
         _, R = site_frame(model, q)
         return np.arctan2(R[1, 2], R[0, 2])
@@ -52,7 +53,7 @@ def align_wrist(model, qpos, face_yaw=0.0):
     q = qpos.copy()
     lo, hi = model.jnt_range[model.joint("wrist_roll").id]
     for _ in range(3):
-        off = (jaw_yaw(q) - face_yaw + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        off = (jaw_yaw(q) - face_yaw + np.pi / 2) % np.pi - np.pi / 2
         if abs(off) < 0.01:
             break
         probe = q.copy()

@@ -67,6 +67,39 @@ def test_plan_pick_grasps_are_face_aligned():
         assert jaw_face_offset(grasp.qpos) < 0.06, f"misaligned at angle {a}"
 
 
+def test_grasp_yaw_upright_block_uses_footprint_axis():
+    # upright block rotated 30 deg about z; square 4x4cm footprint, either
+    # horizontal axis is fine but it must be one of them (30 or 120 deg)
+    a = np.radians(15)  # half-angle: quat for 30 deg about z
+    q = pp.grasp_yaw([np.cos(a), 0, 0, np.sin(a)], [0.02, 0.02, 0.03])
+    assert min(abs((np.degrees(q) - d + 45) % 90 - 45) for d in (30, 120)) < 1
+
+
+def test_grasp_yaw_tipped_block_targets_narrow_dimension():
+    """Regression: tipped blocks (6cm length horizontal) were grabbed
+    lengthwise half the time — 23% success vs 81% upright. The jaws must
+    close across a 4cm axis, never the 6cm one."""
+    a = np.radians(45)  # quat for 90 deg about x: block lies on its side
+    yaw = pp.grasp_yaw([np.cos(a), np.sin(a), 0, 0], [0.02, 0.02, 0.03])
+    # body x (half 0.02) stays along world x; body z (half 0.03) is horizontal
+    # along world y — the jaw axis must align with x (yaw ~ 0 mod 180)
+    assert abs((np.degrees(yaw) + 90) % 180 - 90) < 1
+
+
+def test_align_wrist_distinguishes_opposite_axes():
+    """Alignment must hit the requested axis (mod 180), not any face (mod 90)."""
+    p = polar(0.2, 20)
+    g = ik.solve(MODEL, pp.HOME, p)
+    q0 = ik.align_wrist(MODEL, g.qpos, face_yaw=0.0)
+    q90 = ik.align_wrist(MODEL, g.qpos, face_yaw=np.pi / 2)
+    def yaw(q):
+        _, R = ik.site_frame(MODEL, q)
+        return np.arctan2(R[1, 2], R[0, 2])
+    off0 = abs((yaw(q0) + np.pi / 2) % np.pi - np.pi / 2)
+    off90 = abs((yaw(q90) - np.pi / 2 + np.pi / 2) % np.pi - np.pi / 2)
+    assert off0 < 0.06 and off90 < 0.06
+
+
 def test_home_pose_is_collision_free():
     assert not checks.pose_collides(MODEL, pp.HOME)
 
