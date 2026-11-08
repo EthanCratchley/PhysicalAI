@@ -142,6 +142,15 @@ def grasp_yaw(quat, half):
     return float(np.arctan2(R[1, narrow], R[0, narrow]))
 
 
+def earned_budget(budget, nudge_gap, gap):
+    """A nudge that shrank the gap by NUDGE_MIN_PROGRESS doesn't count against
+    the try budget (up to the hard ceiling): progress earns patience. Returns
+    (budget, nudge_gap), clearing nudge_gap so each nudge refunds once."""
+    if nudge_gap is not None and nudge_gap - gap >= cfg.NUDGE_MIN_PROGRESS:
+        return min(budget + 1, cfg.MAX_TRIES_HARD), None
+    return budget, nudge_gap
+
+
 def pick_is_futile(truth, last_pick_truth):
     """A failed pick earns a retry only if the world changed: the sim is
     deterministic, so re-running a pick against a block that hasn't moved
@@ -329,7 +338,10 @@ def episode(sim, rng):
     in_bin = False
     nudge_gap = None   # gap at the moment of the last nudge, for the progress rule
     last_pick = None   # block truth at the moment of the last pick, same idea
-    for t in range(1, cfg.MAX_TRIES + 1):
+    budget = cfg.MAX_TRIES
+    t = 0
+    while t < min(budget, cfg.MAX_TRIES_HARD):
+        t += 1
         for inj in injections:
             # the camera bias is systematic, but sensor noise is a fresh error
             # on every reading
@@ -343,6 +355,7 @@ def episode(sim, rng):
                "truth": [round(float(v), 4) for v in truth],
                "perceived": [round(float(v), 4) for v in perceived],
                "gap": round(float(gap), 4)}
+        budget, nudge_gap = earned_budget(budget, nudge_gap, gap)
 
         hover, grasp, carry, drop, ok, verdict = plan_pick(sim, perceived, sim.block_grasp_yaw())
         rec["precheck"] = {"ok": ok, "reason": verdict}
@@ -397,7 +410,9 @@ def episode(sim, rng):
             print("    no reachable, collision-free touch pose at any height — stopping")
             break
         touch, touch_z = plan
-        if nudge_gap is not None and nudge_gap - gap < cfg.NUDGE_MIN_PROGRESS:
+        # a productive nudge would have been refunded (and cleared) above, so a
+        # surviving nudge_gap means the last nudge didn't help
+        if nudge_gap is not None:
             rec["action"] = "none"
             actions.append("none")
             tries.append(rec)

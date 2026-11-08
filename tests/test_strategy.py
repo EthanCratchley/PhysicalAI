@@ -5,7 +5,8 @@ import json
 import numpy as np
 
 import config as cfg
-from pick_place import classify, dist_to_graspable, load_failures, nudge_target, pick_is_futile
+from pick_place import (classify, dist_to_graspable, earned_budget, load_failures,
+                        nudge_target, pick_is_futile)
 
 
 def polar(r, deg):
@@ -102,6 +103,24 @@ def test_load_failures_returns_seed_and_failed_episodes(tmp_path):
     path = tmp_path / "run_test.json"
     path.write_text(json.dumps(log))
     assert load_failures(str(path)) == (42, [2, 5])
+
+
+def test_productive_nudge_refunds_its_try():
+    """Regression: far blocks walked in productively got cut off by the flat
+    try cap mid-campaign, one or two nudges short of a pick."""
+    budget, gap = earned_budget(cfg.MAX_TRIES, nudge_gap=0.10, gap=0.08)
+    assert budget == cfg.MAX_TRIES + 1
+    assert gap is None  # refund happens once per nudge
+
+
+def test_unproductive_nudge_keeps_budget():
+    assert earned_budget(cfg.MAX_TRIES, nudge_gap=0.10, gap=0.099) == (cfg.MAX_TRIES, 0.10)
+    assert earned_budget(cfg.MAX_TRIES, nudge_gap=None, gap=0.08) == (cfg.MAX_TRIES, None)
+
+
+def test_budget_never_exceeds_hard_cap():
+    budget, _ = earned_budget(cfg.MAX_TRIES_HARD, nudge_gap=0.10, gap=0.05)
+    assert budget == cfg.MAX_TRIES_HARD
 
 
 def test_first_pick_is_never_futile():

@@ -35,7 +35,8 @@ INJECTIONS = {
 }
 
 # --- multi-try strategy ---
-MAX_TRIES = 4                 # hard cap on actions (picks + nudges) per block
+MAX_TRIES = 4                 # try budget per block; a productive nudge refunds its try
+MAX_TRIES_HARD = 8            # absolute ceiling however much progress is being made
 TOUCH_TOL = 0.04              # block counts as touchable if best-effort IK gets within this (m)
 NUDGE_MIN_PROGRESS = 0.005    # a nudge must shrink the gap to graspable by this much to earn another (m)
 NUDGE_TARGET_R = 0.21         # drag blocks toward this radius: middle of the comfortable workspace (m)
