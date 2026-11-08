@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 logs/
 
 # Third-party MuJoCo Menagerie clone — see README for setup.
