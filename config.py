@@ -65,7 +65,9 @@ JOINT_LIMIT_MARGIN = 0.05     # pre-check fails if any IK joint angle is within 
 # the arm is short: it can only hold the gripper vertical below ~0.09m height,
 # so the hover is low and the drop waypoint allows a tilted gripper
 HOVER_Z = 0.08                # absolute gripper height when hovering above the block (m)
-GRASP_Z_OFFSET = 0.0          # grasp target height relative to block center (m)
+GRASP_Z_OFFSET = -0.012       # grasp target height relative to block center (m); negative
+                              # drives the jaws deeper — at 0 they only engaged the top
+                              # 2.5cm of the 6.2cm block (tip-grips that drop in transit)
 CARRY_Z = 0.14                # lift to this height (tilt allowed) before swinging to the bin,
                               # so the hanging block clears the bin walls
 DROP_Z = 0.14                 # absolute gripper height above bin center when releasing (m)
