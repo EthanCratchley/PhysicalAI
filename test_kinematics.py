@@ -71,6 +71,25 @@ def test_home_pose_is_collision_free():
     assert not checks.pose_collides(MODEL, pp.HOME)
 
 
+def test_plan_touch_climbs_when_low_pose_is_blocked():
+    """Regression: a fixed touch height (NUDGE_Z) declared blocks untouchable
+    when a slightly higher touch point was reachable and collision-free.
+    Positions taken from real declines in a 1000-episode run."""
+    for xy in [(0.024, 0.1207), (-0.0733, -0.2953), (0.2031, -0.2617)]:
+        plan = pp.plan_touch(MODEL, np.array([xy[0], xy[1], 0.031]))
+        assert plan is not None, f"no touch plan at {xy}"
+        touch, z = plan
+        assert touch.pos_err <= cfg.TOUCH_TOL
+        assert not checks.pose_collides(MODEL, touch.qpos)
+
+
+def test_plan_touch_returns_none_when_all_heights_blocked():
+    """These positions collide at every candidate height (gripper folds into
+    the shoulder); the honest answer is None."""
+    for xy in [(0.0767, -0.0967), (0.1206, -0.0281)]:
+        assert pp.plan_touch(MODEL, np.array([xy[0], xy[1], 0.031])) is None, f"{xy}"
+
+
 def test_inner_touch_poses_collide():
     """Regression: IK returned touch poses overlapping the robot's own base;
     executing them jammed the gripper against the arm."""

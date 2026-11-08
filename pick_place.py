@@ -108,6 +108,18 @@ def nudge_target(p):
     return np.array([p[0] + v[0], p[1] + v[1], cfg.NUDGE_Z])
 
 
+def plan_touch(model, p):
+    """Find a reachable, collision-free touch pose on the block, trying the
+    lowest height first (best contact) and climbing when a pose is unreachable
+    or physically blocked. Returns (ik_result, height) or None if every
+    candidate height fails — then the block is genuinely untouchable."""
+    for z in cfg.NUDGE_TOUCH_HEIGHTS:
+        t = ik.solve(model, HOME, [p[0], p[1], z], point_down=False)
+        if t.pos_err <= cfg.TOUCH_TOL and not checks.pose_collides(model, t.qpos):
+            return t, z
+    return None
+
+
 def pick_is_futile(truth, last_pick_truth):
     """A failed pick earns a retry only if the world changed: the sim is
     deterministic, so re-running a pick against a block that hasn't moved
@@ -351,17 +363,15 @@ def episode(sim, rng):
             continue
 
         print(f"  try {t}: pre-check declines ({verdict})")
-        touch = ik.solve(sim.model, HOME, [perceived[0], perceived[1], cfg.NUDGE_Z],
-                         point_down=False)
-        if touch.pos_err > cfg.TOUCH_TOL or checks.pose_collides(sim.model, touch.qpos):
+        plan = plan_touch(sim.model, perceived)
+        if plan is None:
             rec["action"] = "none"
             actions.append("none")
             tries.append(rec)
             stop = "untouchable"
-            why = ("the touch pose self-collides" if touch.pos_err <= cfg.TOUCH_TOL
-                   else f"best effort {touch.pos_err:.3f}m off")
-            print(f"    can't even touch it ({why}) — stopping")
+            print("    no reachable, collision-free touch pose at any height — stopping")
             break
+        touch, touch_z = plan
         if nudge_gap is not None and nudge_gap - gap < cfg.NUDGE_MIN_PROGRESS:
             rec["action"] = "none"
             actions.append("none")
@@ -371,6 +381,7 @@ def episode(sim, rng):
             break
 
         drag = nudge_target(perceived)
+        drag[2] = touch_z  # drag at the height the touch pose was found at
         # descend from above the block, drag, then lift before going home —
         # otherwise the glides sweep through the block area and knock it in
         # uncontrolled directions

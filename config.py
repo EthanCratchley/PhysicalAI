@@ -38,7 +38,9 @@ NUDGE_ANGLE_CLAMP = (-35.0, 45.0)  # and into this angular sector (deg); narrowe
                                    # sector so nudge targets stay clear of the shoulder_pan limit
 PICK_MIN_MOVE = 0.005         # a failed pick earns a retry only if it moved the block this much (m)
 NUDGE_DRAG_MAX = 0.10         # longest drag per nudge (m)
-NUDGE_Z = 0.02                # gripper height while touching/dragging (m)
+NUDGE_Z = 0.02                # preferred gripper height while touching/dragging (m)
+NUDGE_TOUCH_HEIGHTS = (0.02, 0.03, 0.04, 0.05)  # tried lowest-first: a third of "untouchable"
+                              # declines were artifacts of only ever trying the lowest
 
 # --- pre-check: reach limits ---
 REACH_MIN = 0.12              # targets closer than this are inside the robot's own footprint
