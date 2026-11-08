@@ -39,11 +39,19 @@ different lengths, and new failure modes (drop near a reach boundary). The succe
 and `SPAWN_CLEAR_OF_BIN` resampling already read the bin position from the model, so
 most of the work is writing the bin's new pose into the scene per episode and logging it.
 
-## Real perception stack
-Perception is currently sim ground truth plus injected faults. The real-arm version
-needs a camera, calibration, and block pose estimation — likely the largest single
-sim-to-real work item. The camera/noise injections already harden the decision layer
-against the error profile a real camera will produce.
+## Camera perception in simulation
+The scene already defines a fixed `overhead` camera in `pick_scene.xml`. Render from it
+and estimate the block's pose from pixels (classic CV is enough: color segmentation +
+known geometry), then feed that estimate into `perceive()` instead of ground truth.
+This replaces the *injected* camera faults with *real* perception error while runs stay
+cheap, headless and replayable — the single best bridge toward hardware, built before
+buying anything.
+
+## Real perception stack (hardware)
+The real-arm version needs a physical camera, calibration, and block pose estimation —
+likely the largest single sim-to-real work item. Doing the sim-camera step first means
+the estimator, its error profile, and the decision layer's tolerance of it are all
+proven before hardware arrives.
 
 ## Learning / RL experiments
 Everything so far is hand-coded; the natural experiment is letting the robot learn from
