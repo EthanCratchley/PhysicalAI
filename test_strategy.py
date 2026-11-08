@@ -1,9 +1,11 @@
 """Tests for the multi-try strategy: gap metric, nudge planning, episode classification."""
 
+import json
+
 import numpy as np
 
 import config as cfg
-from pick_place import classify, dist_to_graspable, nudge_target, pick_is_futile
+from pick_place import classify, dist_to_graspable, load_failures, nudge_target, pick_is_futile
 
 
 def polar(r, deg):
@@ -89,6 +91,17 @@ def test_classify_gave_up():
 
 def test_classify_declined_without_acting():
     assert classify(["none"], False) == ("declined", True)
+
+
+def test_load_failures_returns_seed_and_failed_episodes(tmp_path):
+    log = {"seed": 42, "episodes": [
+        {"episode": 1, "success": True},
+        {"episode": 2, "success": False},
+        {"episode": 5, "success": False},
+    ]}
+    path = tmp_path / "run_test.json"
+    path.write_text(json.dumps(log))
+    assert load_failures(str(path)) == (42, [2, 5])
 
 
 def test_first_pick_is_never_futile():

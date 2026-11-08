@@ -19,6 +19,7 @@ More attempts:            add e.g. --attempts 10
 
 import argparse
 import datetime
+import glob
 import json
 import os
 import time
@@ -106,6 +107,13 @@ def nudge_target(p):
     if d > cfg.NUDGE_DRAG_MAX:
         v *= cfg.NUDGE_DRAG_MAX / d
     return np.array([p[0] + v[0], p[1] + v[1], cfg.NUDGE_Z])
+
+
+def load_failures(path):
+    """Read a run log and return (seed, failed episode numbers)."""
+    with open(path) as f:
+        log = json.load(f)
+    return log["seed"], [e["episode"] for e in log["episodes"] if not e["success"]]
 
 
 def plan_touch(model, p):
@@ -439,12 +447,27 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="omit for a random seed; it's printed and logged so any run can be replayed")
     parser.add_argument("--replay", type=str, default=None,
-                        help="comma-separated attempt numbers from a previous run with this seed, "
-                             "e.g. --replay 11,14,32; other attempts are skipped")
+                        help="comma-separated episode numbers from a previous run with this seed, "
+                             "e.g. --replay 11,14,32; other episodes are skipped")
+    parser.add_argument("--replay-failures", nargs="?", const="latest", default=None,
+                        metavar="LOG",
+                        help="replay every failed episode from a run log "
+                             "(a logs/run_*.json path; defaults to the newest log)")
     args = parser.parse_args()
 
     replay = None
-    if args.replay:
+    if args.replay_failures:
+        path = args.replay_failures
+        if path == "latest":
+            path = sorted(glob.glob("logs/run_*.json"))[-1]
+        args.seed, failed = load_failures(path)
+        if not failed:
+            print(f"no failures in {path}")
+            return
+        replay = set(failed)
+        args.attempts = max(replay)
+        print(f"replaying {len(failed)} failures from {path}")
+    elif args.replay:
         replay = {int(n) for n in args.replay.split(",")}
         args.attempts = max(replay)
 
