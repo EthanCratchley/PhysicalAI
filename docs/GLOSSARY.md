@@ -29,6 +29,30 @@ One line each; read `ARCHITECTURE.md` for how they connect.
   aircraft roll/pitch/yaw trio). *Jaw yaw* = which way the squeeze axis points
   seen from above; aligning it to the block's narrow side is what makes grips
   deep instead of corner-on.
+- **Roll / pitch / yaw** — the three ways to rotate, named by axis: roll spins
+  about the thing's own long axis (screwdriver), pitch tips about a horizontal
+  axis (nodding), yaw turns about the vertical axis (shaking your head).
+  Any orientation is some mix of the three.
+- **Pan / lift / flex / roll (the joint names)** — the SO-101's five joints
+  describe their motion: `shoulder_pan` swings the whole arm about the
+  vertical axis (a yaw motion — think a security camera panning);
+  `shoulder_lift` raises the arm and `elbow_flex` / `wrist_flex` bend it,
+  all hinges about horizontal axes (pitch motions, named lift or flex by
+  body-part convention); `wrist_roll` spins the gripper about its own
+  pointing axis (a roll motion).
+- **How this connects to jaw yaw** — when the gripper points straight down,
+  wrist_roll's spin axis *is* the vertical axis, so rolling the wrist changes
+  the jaw axis's compass heading directly: wrist_roll is the knob, jaw yaw is
+  the reading. That coincidence is what `align_wrist` exploits — and why it
+  breaks for tilted grasps, where roll and yaw stop being the same motion
+  (see Architectural debt). `shoulder_pan` also changes jaw yaw, but it swings
+  the gripper's *position* along with it, so it can't be used to aim the jaws.
+- **Pose** — where something is *and* which way it faces: position +
+  orientation. The block's pose is its center plus its quaternion; a grasp
+  pose is where the gripper should be and how it should point. The word also
+  gets used for an *arm* pose — the 5 joint angles (`qpos`) — because those
+  determine the gripper's pose; IK is exactly the translation between the
+  two ("here's a gripper pose, find an arm pose that produces it").
 - **Frame** — a position plus an orientation (a point and three axes) attached
   to something: the world has one, the gripper has one (`site_frame`), the
   block and future camera each have their own. It matters because no

@@ -27,6 +27,17 @@ budgets tighten.
   it. Fix: loose tolerance for the pre-check question, then polish to the
   solver's best before commanding the arm.
 
+- **The grasp-center offset lives in planning code instead of the robot model.**
+  `GRASP_SIDE_OFFSET` shifts every grasp target sideways so the block ends up
+  centered between the asymmetric jaws — recomputed per plan, in world
+  coordinates, which is the only reason the throwaway orientation solve in
+  `plan_pick` exists. The standard fix (industry calls it a tool center point):
+  define the IK target site in `pick_scene.xml` *at the grasp center between
+  the jaws*. A site lives in the gripper's own frame, so the offset rotates
+  with the gripper for free — the config constant, the per-plan shift, and the
+  throwaway solve all disappear, and the calibration lives where it can't be
+  misapplied.
+
 - **Reachability constants are hand-set when they could be derived.**
   `REACH_MIN/MAX`, band edges, and `NUDGE_ANGLE_CLAMP` are magic numbers; the
   clamp was hand-tightened to dodge the shoulder_pan limit after nudges aimed

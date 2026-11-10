@@ -30,19 +30,24 @@ main()
 
 ## One episode (the core loop, in pick_place.episode)
 
-```
-spawn block in a weighted band  →  roll fault injections
-repeat (budget: MAX_TRIES, productive nudges refund a try, ceiling 8):
-  perceive      ground truth + injected corruption = what the robot believes
-  plan_pick     IK for all waypoints + wrist aligned to the block's narrow axis
-  pre_check     reach, IK converged, no self-collision, joint margins
-  ├─ pass  → PICK: travel high → hover → descend → close → lift → carry →
-  │          drop over bin → in bin? done : retry (only if the block moved)
-  └─ fail  → plan_touch finds a reachable, collision-free touch pose
-       ├─ none → DECLINE (untouchable), episode over
-       └─ ok   → NUDGE: drag the block toward the comfortable workspace,
-                 then loop — but only if the last nudge made progress
-classify(actions, in_bin) → picked / recovered / missed / gave_up / declined
+```mermaid
+flowchart TD
+    spawn["spawn block in a weighted band<br>+ roll fault injections"] --> perceive
+    perceive["perceive<br>look at the block: sim truth, possibly corrupted by faults"] --> plan["plan_pick<br>work out joint angles (IK) for every waypoint of the pick"]
+    plan --> pre{"pre_check"}
+    pre -- pass --> pick["PICK<br>hover, descend, close, lift, carry, drop"]
+    pick --> inbin{"block in bin?"}
+    inbin -- yes --> cls["classify"]
+    inbin -- "no, but the block moved" --> budget
+    inbin -- "no, block untouched (futile)" --> cls
+    pre -- fail --> touch{"plan_touch finds a<br>touch pose?"}
+    touch -- none --> dec["DECLINE — untouchable"] --> cls
+    touch -- found --> nudge["NUDGE<br>drag toward the comfortable workspace"]
+    nudge -- made progress --> budget{"tries left?<br>productive nudges refund, ceiling 8"}
+    nudge -- stalled --> cls
+    budget -- yes --> perceive
+    budget -- no --> cls
+    cls --> out["picked / recovered / missed / gave_up / declined"]
 ```
 
 Two self-honesty rules guard the loop: a failed **pick** earns a retry only if
@@ -58,62 +63,78 @@ today it's one line of arithmetic; see "Perception and faults".)
 Planning is all IK — six solves and three wrist alignments before the arm
 ever moves:
 
+```mermaid
+flowchart TD
+    in["inputs: where the robot thinks the block is,<br>and which way the jaws should face (across its narrow side)"]
+    in --> nom["run IK once at the block<br>a throwaway solve — just to find out which way<br>the gripper ends up facing at that spot"]
+    nom --> aw["spin the wrist (align_wrist)<br>so the jaws will close across the block's narrow side"]
+    aw --> shift["shift the target sideways a little (GRASP_SIDE_OFFSET)<br>one jaw is fixed and one moves, so the block<br>needs to sit off-center to end up between them"]
+    shift --> hv["run IK for the hover spot (right above the grasp),<br>seeded from the previous answer — a nearby<br>answer is the best starting guess"]
+    hv --> gr["run IK for the grasp itself,<br>seeded from the hover answer"]
+    gr --> re["re-align the wrist roll (align_wrist again)<br>each IK run drifts it off the face yaw (known debt:<br>yaw belongs inside the solver)"]
+    re --> cd["run IK for the carry height and the drop over the bin<br>gripper allowed to tilt — it can't point<br>straight down that high up"]
+    cd --> pc["pre_check judges the grasp + hover answers<br>its verdict travels with the waypoints"]
 ```
-perceived block position + face yaw (grasp_yaw: narrowest horizontal axis)
-  │
-  solve nominal grasp        only to learn the gripper's orientation there
-  align_wrist to face yaw    roll the jaws across the block's narrow side
-  read the jaw axis          → side shift that centers the block in the
-  │                            asymmetric jaw gap (GRASP_SIDE_OFFSET)
-  solve hover  (seeded from nominal — a near miss is the best starting guess)
-  solve grasp  (seeded from hover)
-  re-align both wrists       the solves drift the roll again (known debt:
-  │                          yaw belongs inside the solver)
-  solve carry + drop         position-only; the gripper may tilt up high
-  │
-  pre_check(grasp, hover) ──→ verdict travels with the waypoints
-```
+
+**A fragility to remember (the screwdriver condition).** The wrist-alignment
+steps only work while the gripper points straight down: wrist_roll then spins
+the jaws about the vertical axis like twisting a vertical screwdriver — the
+tip stays put, so the solved position survives the twist. Tilt the gripper
+and that stops being true: twisting would swing the gripper through space,
+entangling orientation with position. Two steps of this diagram depend on
+that coincidence (`align_wrist` and the re-align pass), and both break the
+day we allow tilted grasps — e.g. for tall objects, which hover height
+already forces toward tilting. The cure for both, plus the throwaway solve,
+is in IDEAS.md → Architectural debt (yaw inside the solver; grasp-center
+offset into the model).
 
 ## Zoom: one IK solve (ik.solve)
 
-Outer layer — restarts, because DLS is local and one seed can get stuck:
+Two layers in one picture. The box in the middle is the engine — one complete
+descent (`_solve_once`), the inner loop. Everything outside it is the outer
+layer (`solve`), whose only job is choosing starting points (seeds) and
+re-running the engine when a descent gets stuck:
 
-```
-solve from the given seed ── converged? ──── yes ──→ return it
-         │ no
-repeat ≤ IK_RESTARTS:
-  fresh random seed → descend ── converged? ─ yes ──→ return it
-         │ all failed
-return the best attempt anyway (smallest error, converged=False)
-                               └─ plan_touch uses these near-misses
+```mermaid
+flowchart TD
+    seed["choose a seed — the starting joint angles<br>first time: the given pose (e.g. the hover answer)<br>on a restart: a random pose, which can<br>escape a local minimum (dead end)"]
+    seed --> fk
+    subgraph descent ["one full descent — _solve_once, up to IK_MAX_ITERS laps"]
+        fk["forward kinematics: compute where the gripper<br>ends up for the current joint angles"]
+        fk --> err["measure the error (the miss)<br>how far from the target, and how far from<br>pointing straight down (when that's required)"]
+        err --> tol{"error smaller than<br>IK_POS_TOL?"}
+        tol -- no --> jac["work out how each joint's motion<br>moves the gripper (the jacobian)"]
+        jac --> step["damped least-squares step: small joint changes<br>that shrink the error (damping keeps the<br>step from blowing up near singularities)"]
+        step --> apply["move the joints that much,<br>staying inside their limits"] --> fk
+    end
+    tol -- "yes — the first answer that's good enough wins,<br>it never polishes further (the IK_POS_TOL debt)" --> done["converged<br>return these joint angles"]
+    tol -. "ran out of iterations:<br>this descent is stuck" .-> fail["descent failed"]
+    fail -- "restarts left (≤ IK_RESTARTS)" --> seed
+    fail -- "out of restarts" --> best["return the best attempt anyway, converged = false<br>plan_touch uses these near-misses"]
 ```
 
-Inner layer — one DLS descent (`_solve_once`, ≤ IK_MAX_ITERS):
-
-```
-┌─→ forward kinematics        where is the gripper for these joint angles?
-│   error = target − current  position error, + pointing-down error if asked
-│   both under tolerance? ─── yes ──→ done (stops at the FIRST passing
-│        │ no                         iterate — the IK_POS_TOL debt)
-│   jacobian at this pose     how each joint motion moves the gripper
-│   damped least-squares step damping caps the step near singularities
-└── apply it, clipped to joint limits
-```
+Note what carries between laps: only the joint angles, getting progressively
+better. Forward kinematics is not an output — it's the measuring instrument,
+recomputed fresh every lap ("where *would* the gripper be with my current
+angles?"), because you can't know how far off you are without computing where
+you are.
 
 ## Zoom: the pre-check gauntlet (checks.pre_check)
 
 Four conditions, cheapest first; the first failure is the decline reason
 logged for the episode:
 
-```
-horizontal distance within [REACH_MIN, REACH_MAX]?   ─ no → "out of reach"
-grasp IK converged?                                  ─ no → "no IK solution"
-grasp pose free of self-collision? (pose_collides)   ─ no → "self-collision"
-  …same two questions for the hover pose…
-every joint ≥ JOINT_LIMIT_MARGIN from its hard stop? ─ no → "joint limit"
-        │ all pass
-        ▼
-   attempt the pick
+```mermaid
+flowchart TD
+    r{"is the block inside the reach annulus<br>(the ring between REACH_MIN and REACH_MAX)?"}
+    r -- no --> d1["decline: out of reach"]
+    r -- yes --> ikq{"did IK converge for both<br>the grasp and the hover pose?"}
+    ikq -- no --> d2["decline: no IK solution"]
+    ikq -- yes --> col{"would the arm hit itself<br>in either pose? (pose_collides)"}
+    col -- yes --> d3["decline: self-collision"]
+    col -- no --> lim{"does every joint have breathing room<br>(JOINT_LIMIT_MARGIN) before its hard stop?"}
+    lim -- no --> d4["decline: joint limit"]
+    lim -- yes --> go["attempt the pick"]
 ```
 
 `pose_collides` answers one question IK cannot: a converged solution can
@@ -145,11 +166,14 @@ unplanned arcs away from the block (failure-mode class 3).
 Finding a touch pose — a ladder of heights, lowest first because low contact
 pushes rather than topples:
 
-```
-for z in NUDGE_TOUCH_HEIGHTS (2, 3, 4, 5 cm):
-    best-effort IK to the block at height z (tilt allowed)
-    within TOUCH_TOL and no self-collision? ── yes → touch here
-all heights fail ──→ genuinely untouchable → DECLINE
+```mermaid
+flowchart TD
+    z["pick the next height to try<br>(NUDGE_TOUCH_HEIGHTS: 2, 3, 4, 5 cm — lowest first,<br>low contact pushes instead of toppling)"]
+    z --> s["best-effort IK to the block at that height<br>gripper may tilt, and a near-miss is fine"]
+    s --> ok{"got within 4 cm (TOUCH_TOL),<br>without the arm hitting itself?"}
+    ok -- yes --> t["touch here"]
+    ok -- "no, heights left" --> z
+    ok -- "no, every height failed" --> dec["genuinely untouchable → DECLINE"]
 ```
 
 The drag target (`nudge_target`): aim the block at radius `NUDGE_TARGET_R`
@@ -166,14 +190,16 @@ straight-line versions moved the block by accident.
 
 ## Zoom: scoring an episode (pick_place.classify)
 
-```
-block in the bin?
- ├─ yes ── any nudges on the way? ── no  → picked      (success)
- │                                └─ yes → recovered   (success)
- └─ no ─── ever attempted a pick?  ── yes → missed     (failure)
-           only nudged?            ── yes → gave_up    (failure)
-           never acted at all?           → declined    (success, trusted —
-                                           the spawn band is the audit trail)
+```mermaid
+flowchart TD
+    bin{"block in the bin?"}
+    bin -- yes --> n{"any nudges on the way?"}
+    n -- no --> p["picked — success"]
+    n -- yes --> rec["recovered — success"]
+    bin -- no --> act{"what was attempted?"}
+    act -- a pick --> m["missed — failure"]
+    act -- only nudges --> g["gave_up — failure"]
+    act -- nothing --> d["declined — success<br>trusted, not verified; the spawn band is the audit trail"]
 ```
 
 ## Perception and faults
